@@ -1,35 +1,31 @@
 'use strict';
 
 const SCOPES = 'https://www.googleapis.com/auth/calendar.readonly';
-const STORAGE_KEY_CLIENT_ID = 'gcal_alarm_client_id';
 const STORAGE_KEY_TOKEN = 'gcal_alarm_token';
-// How many minutes before event to fire each alarm
 const ALARM_OFFSETS = [15, 5];
-// Colors for event dots (Google Calendar default palette)
 const CAL_COLORS = ['#039BE5','#33B679','#D50000','#F6BF26','#F4511E','#0B8043','#8E24AA','#616161'];
 
 let accessToken = null;
-let activeAlarms = {}; // eventId+offset -> { timeoutId, eventTitle, startTime }
+let activeAlarms = {};
 let eventsCache = [];
 let tickInterval = null;
 
 // ── Bootstrap ────────────────────────────────────────────────────────────────
 
 window.addEventListener('DOMContentLoaded', () => {
-  const clientId = localStorage.getItem(STORAGE_KEY_CLIENT_ID);
-  const token = localStorage.getItem(STORAGE_KEY_TOKEN);
-
-  if (!clientId) {
-    showScreen('setup');
-    return;
+  // Inject client_id from config.js into the GIS element
+  const onload = document.getElementById('g_id_onload');
+  if (onload && typeof GOOGLE_CLIENT_ID !== 'undefined') {
+    onload.dataset.client_id = GOOGLE_CLIENT_ID;
   }
 
-  if (token) {
+  const stored = localStorage.getItem(STORAGE_KEY_TOKEN);
+  if (stored) {
     try {
-      const parsed = JSON.parse(token);
-      // check expiry
+      const parsed = JSON.parse(stored);
       if (parsed.expires_at && Date.now() < parsed.expires_at) {
         accessToken = parsed.access_token;
+        setUserInfo(parsed.name, parsed.picture);
         showScreen('main');
         loadEvents();
         startTick();
@@ -39,82 +35,74 @@ window.addEventListener('DOMContentLoaded', () => {
   }
 
   showScreen('login');
-  initGSI(clientId);
 });
 
-// ── Screens ──────────────────────────────────────────────────────────────────
+// ── Google Sign-In callback (GIS One Tap / button) ────────────────────────────
+
+window.onGoogleSignIn = function(response) {
+  // response.credential is a JWT id_token — decode to get user info
+  const payload = parseJwt(response.credential);
+  const name = payload.name || '';
+  const picture = payload.picture || '';
+
+  // Exchange id_token for an access token via token client
+  waitForGSI(() => {
+    const tokenClient = google.accounts.oauth2.initTokenClient({
+      client_id: GOOGLE_CLIENT_ID,
+      scope: SCOPES,
+      callback: (tokenResp) => {
+        if (tokenResp.error) {
+          alert('ログインに失敗しました: ' + tokenResp.error);
+          return;
+        }
+        accessToken = tokenResp.access_token;
+        const expiresIn = parseInt(tokenResp.expires_in || 3600, 10);
+        localStorage.setItem(STORAGE_KEY_TOKEN, JSON.stringify({
+          access_token: accessToken,
+          expires_at: Date.now() + expiresIn * 1000,
+          name,
+          picture
+        }));
+        setUserInfo(name, picture);
+        showScreen('main');
+        loadEvents();
+        startTick();
+      }
+    });
+    tokenClient.requestAccessToken({ prompt: '' });
+  });
+};
+
+function waitForGSI(cb, attempts = 0) {
+  if (window.google?.accounts?.oauth2) { cb(); return; }
+  if (attempts > 60) return;
+  setTimeout(() => waitForGSI(cb, attempts + 1), 300);
+}
+
+function parseJwt(token) {
+  try {
+    return JSON.parse(atob(token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));
+  } catch (_) { return {}; }
+}
+
+// ── Screens ───────────────────────────────────────────────────────────────────
 
 function showScreen(name) {
   document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
   document.getElementById(`screen-${name}`).classList.add('active');
 }
 
-// ── Setup screen ─────────────────────────────────────────────────────────────
-
-document.getElementById('save-client-id-btn').addEventListener('click', () => {
-  const val = document.getElementById('client-id-input').value.trim();
-  if (!val || !val.includes('.apps.googleusercontent.com')) {
-    alert('正しいクライアントIDを入力してください\n(xxx.apps.googleusercontent.com の形式)');
-    return;
+function setUserInfo(name, picture) {
+  const nameEl = document.getElementById('user-name');
+  const avatarEl = document.getElementById('user-avatar');
+  if (nameEl) nameEl.textContent = name;
+  if (avatarEl && picture) {
+    avatarEl.src = picture;
+    avatarEl.classList.remove('hidden');
   }
-  localStorage.setItem(STORAGE_KEY_CLIENT_ID, val);
-  showScreen('login');
-  initGSI(val);
-});
-
-document.getElementById('client-id-input').addEventListener('keydown', (e) => {
-  if (e.key === 'Enter') document.getElementById('save-client-id-btn').click();
-});
-
-// ── Login screen ─────────────────────────────────────────────────────────────
-
-document.getElementById('login-btn').addEventListener('click', () => {
-  const clientId = localStorage.getItem(STORAGE_KEY_CLIENT_ID);
-  if (!clientId) { showScreen('setup'); return; }
-  triggerLogin(clientId);
-});
-
-document.getElementById('change-client-btn').addEventListener('click', () => {
-  showScreen('setup');
-});
-
-function initGSI(clientId) {
-  // GSI library loads async — wait for it
-  waitForGSI(() => {/* ready */}, clientId);
 }
 
-function waitForGSI(cb, clientId, attempts = 0) {
-  if (window.google?.accounts?.oauth2) { cb(); return; }
-  if (attempts > 60) { console.warn('GSI not loaded'); return; }
-  setTimeout(() => waitForGSI(cb, clientId, attempts + 1), 300);
-}
-
-function triggerLogin(clientId) {
-  waitForGSI(() => {
-    const client = google.accounts.oauth2.initTokenClient({
-      client_id: clientId,
-      scope: SCOPES,
-      callback: (resp) => {
-        if (resp.error) {
-          alert('ログインに失敗しました: ' + resp.error);
-          return;
-        }
-        accessToken = resp.access_token;
-        const expiresIn = parseInt(resp.expires_in || 3600, 10);
-        localStorage.setItem(STORAGE_KEY_TOKEN, JSON.stringify({
-          access_token: accessToken,
-          expires_at: Date.now() + expiresIn * 1000
-        }));
-        showScreen('main');
-        loadEvents();
-        startTick();
-      }
-    });
-    client.requestAccessToken();
-  }, clientId);
-}
-
-// ── Main screen ───────────────────────────────────────────────────────────────
+// ── Header actions ─────────────────────────────────────────────────────────────
 
 document.getElementById('refresh-btn').addEventListener('click', loadEvents);
 
@@ -125,6 +113,7 @@ document.getElementById('logout-btn').addEventListener('click', () => {
   localStorage.removeItem(STORAGE_KEY_TOKEN);
   stopTick();
   eventsCache = [];
+  if (window.google?.accounts?.id) google.accounts.id.disableAutoSelect();
   showScreen('login');
 });
 
@@ -147,10 +136,10 @@ async function loadEvents() {
   try {
     const now = new Date();
     const end = new Date(now);
-    end.setDate(end.getDate() + 3); // 今後3日間
+    end.setDate(end.getDate() + 3);
 
     const calListRes = await gcalFetch(
-      `https://www.googleapis.com/calendar/v3/users/me/calendarList?maxResults=50`
+      'https://www.googleapis.com/calendar/v3/users/me/calendarList?maxResults=50'
     );
     const cals = (calListRes.items || []).filter(c => c.selected !== false);
 
@@ -182,8 +171,6 @@ async function loadEvents() {
       localStorage.removeItem(STORAGE_KEY_TOKEN);
       accessToken = null;
       showScreen('login');
-      const clientId = localStorage.getItem(STORAGE_KEY_CLIENT_ID);
-      if (clientId) initGSI(clientId);
     } else {
       container.innerHTML = `<div class="empty-state">読み込みに失敗しました<br>${err.message || ''}</div>`;
     }
@@ -206,7 +193,9 @@ async function gcalFetch(url) {
 
 function renderEvents(events) {
   const container = document.getElementById('events-container');
-  if (!events.length) {
+  const timeEvents = events.filter(e => parseEventStart(e));
+
+  if (!timeEvents.length) {
     container.innerHTML = '<div class="empty-state">今後3日間の予定はありません 🎉</div>';
     return;
   }
@@ -215,10 +204,8 @@ function renderEvents(events) {
   const fragments = [];
   let lastDateKey = null;
 
-  events.forEach(event => {
+  timeEvents.forEach(event => {
     const start = parseEventStart(event);
-    if (!start) return; // skip all-day
-
     const dateKey = formatDateLabel(start);
     if (dateKey !== lastDateKey) {
       lastDateKey = dateKey;
@@ -227,9 +214,7 @@ function renderEvents(events) {
       lbl.textContent = dateKey;
       fragments.push(lbl);
     }
-
-    const card = buildEventCard(event, start, now);
-    fragments.push(card);
+    fragments.push(buildEventCard(event, start, now));
   });
 
   container.innerHTML = '';
@@ -240,38 +225,33 @@ function buildEventCard(event, start, now) {
   const id = event.id;
   const title = event.summary || '（タイトルなし）';
   const color = event._calColor || '#007AFF';
-  const timeStr = formatTime(start);
   const minutesUntil = (start - now) / 60000;
 
   const card = document.createElement('div');
   card.className = 'event-card';
   card.dataset.id = id;
-
   if (minutesUntil < 0) card.classList.add('past');
   else if (minutesUntil <= 30) card.classList.add('soon');
 
-  const dot = `<div class="event-color-dot" style="background:${color}"></div>`;
-  const info = `
-    <div class="event-info">
-      <div class="event-title">${escHtml(title)}</div>
-      <div class="event-time">${timeStr}</div>
-    </div>`;
-  const alarmArea = buildAlarmArea(event, start, now);
+  const dot = document.createElement('div');
+  dot.className = 'event-color-dot';
+  dot.style.background = color;
 
-  card.innerHTML = dot + info;
+  const info = document.createElement('div');
+  info.className = 'event-info';
+  info.innerHTML = `<div class="event-title">${escHtml(title)}</div><div class="event-time">${formatTime(start)}</div>`;
+
+  const alarmArea = document.createElement('div');
+  alarmArea.className = 'event-alarm-area';
+  alarmArea.dataset.id = id;
+  alarmArea.dataset.start = start.getTime();
+  alarmArea.dataset.title = title;
+  refreshAlarmAreaContent(alarmArea, id, start, now);
+
+  card.appendChild(dot);
+  card.appendChild(info);
   card.appendChild(alarmArea);
   return card;
-}
-
-function buildAlarmArea(event, start, now) {
-  const area = document.createElement('div');
-  area.className = 'event-alarm-area';
-  area.dataset.id = event.id;
-  area.dataset.start = start.getTime();
-  area.dataset.title = event.summary || '（タイトルなし）';
-
-  refreshAlarmAreaContent(area, event.id, start, now);
-  return area;
 }
 
 function refreshAlarmAreaContent(area, eventId, start, now) {
@@ -279,34 +259,29 @@ function refreshAlarmAreaContent(area, eventId, start, now) {
   area.innerHTML = '';
 
   if (minutesUntil < 0) {
-    area.innerHTML = '<span style="font-size:12px;color:var(--text-sub)">終了</span>';
+    area.innerHTML = '<span class="ended-label">終了</span>';
     return;
   }
-
-  let hasAnyAlarm = false;
 
   ALARM_OFFSETS.forEach(offset => {
     const key = `${eventId}_${offset}`;
     const alarmTime = new Date(start.getTime() - offset * 60000);
     const fireMinutes = (alarmTime - now) / 60000;
-
-    if (fireMinutes < -1) return; // already passed
+    if (fireMinutes < -1) return;
 
     if (activeAlarms[key]) {
-      hasAnyAlarm = true;
       const remaining = Math.ceil((alarmTime - now) / 60000);
       const countdown = document.createElement('div');
       countdown.className = 'alarm-countdown pulsing';
-      countdown.textContent = remaining > 0 ? `⏰ ${remaining}分後にアラーム` : '⏰ まもなく！';
+      countdown.textContent = remaining > 0 ? `⏰ ${remaining}分後` : '⏰ まもなく！';
       area.appendChild(countdown);
 
       const btn = document.createElement('button');
       btn.className = 'alarm-btn alarm-btn-cancel';
-      btn.textContent = `${offset}分前をキャンセル`;
+      btn.textContent = `${offset}分前 ✕`;
       btn.addEventListener('click', () => {
         cancelAlarm(key);
-        const freshArea = document.querySelector(`.event-alarm-area[data-id="${eventId}"]`);
-        if (freshArea) refreshAlarmAreaContent(freshArea, eventId, start, new Date());
+        refreshAlarmAreaContent(area, eventId, start, new Date());
         renderAlarmBar();
       });
       area.appendChild(btn);
@@ -315,34 +290,28 @@ function refreshAlarmAreaContent(area, eventId, start, now) {
       btn.className = 'alarm-btn alarm-btn-set';
       btn.textContent = `${offset}分前`;
       btn.addEventListener('click', () => {
-        setAlarm(eventId, event => event, offset, start, area.dataset.title);
+        setAlarm(eventId, offset, start, area.dataset.title);
         refreshAlarmAreaContent(area, eventId, start, new Date());
         renderAlarmBar();
       });
       area.appendChild(btn);
     }
   });
-
-  return hasAnyAlarm;
 }
 
 // ── Alarm logic ───────────────────────────────────────────────────────────────
 
-function setAlarm(eventId, _getEvent, offsetMin, startTime, title) {
+function setAlarm(eventId, offsetMin, startTime, title) {
   const key = `${eventId}_${offsetMin}`;
   if (activeAlarms[key]) return;
 
   const alarmTime = new Date(startTime.getTime() - offsetMin * 60000);
   const msUntil = alarmTime - Date.now();
-
-  if (msUntil < -60000) return; // already long past
+  if (msUntil < -60000) return;
 
   requestNotificationPermission();
 
-  const timeoutId = setTimeout(() => {
-    fireAlarm(title, startTime, key);
-  }, Math.max(msUntil, 0));
-
+  const timeoutId = setTimeout(() => fireAlarm(title, startTime, key), Math.max(msUntil, 0));
   activeAlarms[key] = { timeoutId, title, startTime, offsetMin };
 }
 
@@ -359,14 +328,8 @@ function cancelAllAlarms() {
 
 function fireAlarm(title, startTime, key) {
   delete activeAlarms[key];
-
-  // Sound
   playAlarmSound();
-
-  // Vibration
   if (navigator.vibrate) navigator.vibrate([300, 100, 300, 100, 300]);
-
-  // System notification (if permission granted)
   if (Notification.permission === 'granted') {
     new Notification('⏰ ' + title, {
       body: `${formatTime(startTime)} 開始`,
@@ -375,10 +338,7 @@ function fireAlarm(title, startTime, key) {
       renotify: true
     });
   }
-
-  // In-app modal
   showAlarmModal(title, startTime);
-
   renderAlarmBar();
   renderEvents(eventsCache);
 }
@@ -397,41 +357,32 @@ function dismissAlarmModal() {
 function renderAlarmBar() {
   const count = Object.keys(activeAlarms).length;
   const bar = document.getElementById('alarm-active-bar');
-  const text = document.getElementById('alarm-bar-text');
   if (count === 0) {
     bar.classList.add('hidden');
   } else {
     bar.classList.remove('hidden');
-    text.textContent = `⏰ ${count}件のアラームが設定中`;
+    document.getElementById('alarm-bar-text').textContent = `⏰ ${count}件のアラームが設定中`;
   }
 }
 
-// ── Tick (live countdown update) ─────────────────────────────────────────────
+// ── Tick ──────────────────────────────────────────────────────────────────────
 
 function startTick() {
   stopTick();
   tickInterval = setInterval(() => {
     const now = new Date();
     document.querySelectorAll('.event-alarm-area').forEach(area => {
-      const eventId = area.dataset.id;
-      const startMs = parseInt(area.dataset.start, 10);
-      if (!eventId || !startMs) return;
-      const start = new Date(startMs);
-      const title = area.dataset.title;
-
-      const hasActive = Object.keys(activeAlarms).some(k => k.startsWith(eventId + '_'));
-      if (!hasActive) return;
-
-      refreshAlarmAreaContent(area, eventId, start, now);
+      if (!Object.keys(activeAlarms).some(k => k.startsWith(area.dataset.id + '_'))) return;
+      refreshAlarmAreaContent(area, area.dataset.id, new Date(parseInt(area.dataset.start)), now);
     });
-  }, 15000); // update every 15s
+  }, 15000);
 }
 
 function stopTick() {
   if (tickInterval) { clearInterval(tickInterval); tickInterval = null; }
 }
 
-// ── Notification permission ───────────────────────────────────────────────────
+// ── Notification ──────────────────────────────────────────────────────────────
 
 function requestNotificationPermission() {
   if ('Notification' in window && Notification.permission === 'default') {
@@ -483,12 +434,9 @@ function stopAlarmSound() {
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function parseEventStart(event) {
-  const s = event.start;
-  if (!s) return null;
-  if (s.dateTime) {
-    try { return new Date(s.dateTime); } catch (_) { return null; }
-  }
-  return null; // all-day
+  const s = event?.start;
+  if (!s || !s.dateTime) return null;
+  try { return new Date(s.dateTime); } catch (_) { return null; }
 }
 
 function formatTime(dt) {
@@ -512,9 +460,6 @@ function escHtml(s) {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
-// Service worker registration
 if ('serviceWorker' in navigator) {
-  window.addEventListener('load', () => {
-    navigator.serviceWorker.register('sw.js').catch(() => {});
-  });
+  window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
 }
