@@ -140,27 +140,36 @@ async function loadEvents() {
   try {
     const now = new Date();
     const end = new Date(now);
-    end.setDate(end.getDate() + 3);
+    end.setDate(end.getDate() + 7); // 7日間に拡大
 
     const calListRes = await gcalFetch(
       'https://www.googleapis.com/calendar/v3/users/me/calendarList?maxResults=50'
     );
-    const cals = (calListRes.items || []).filter(c => c.selected !== false);
+    const cals = calListRes.items || [];
 
+    // カレンダーが0件の場合はプライマリだけ試す
+    const targets = cals.length > 0 ? cals : [{ id: 'primary', backgroundColor: CAL_COLORS[0] }];
+
+    const errors = [];
     const allEvents = [];
-    await Promise.all(cals.map(async (cal, idx) => {
+    await Promise.all(targets.map(async (cal, idx) => {
       try {
         const res = await gcalFetch(
           `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(cal.id)}/events` +
           `?timeMin=${now.toISOString()}&timeMax=${end.toISOString()}` +
-          `&singleEvents=true&orderBy=startTime&maxResults=50`
+          `&singleEvents=true&orderBy=startTime&maxResults=100`
         );
         (res.items || []).forEach(e => {
           e._calColor = cal.backgroundColor || CAL_COLORS[idx % CAL_COLORS.length];
           allEvents.push(e);
         });
-      } catch (_) {}
+      } catch (e) { errors.push(`${cal.id}: ${e.message}`); }
     }));
+
+    if (allEvents.length === 0 && errors.length > 0) {
+      container.innerHTML = `<div class="empty-state">取得エラー:<br>${errors.join('<br>')}</div>`;
+      return;
+    }
 
     allEvents.sort((a, b) => {
       const ta = parseEventStart(a);
@@ -169,7 +178,7 @@ async function loadEvents() {
     });
 
     eventsCache = allEvents;
-    renderEvents(allEvents);
+    renderEvents(allEvents, cals.length);
   } catch (err) {
     if (err.status === 401) {
       localStorage.removeItem(STORAGE_KEY_TOKEN);
@@ -195,12 +204,13 @@ async function gcalFetch(url) {
 
 // ── Render ────────────────────────────────────────────────────────────────────
 
-function renderEvents(events) {
+function renderEvents(events, calCount) {
   const container = document.getElementById('events-container');
   const timeEvents = events.filter(e => parseEventStart(e) !== null);
 
   if (!timeEvents.length) {
-    container.innerHTML = '<div class="empty-state">今後3日間の予定はありません 🎉</div>';
+    const calInfo = calCount !== undefined ? `（カレンダー ${calCount} 件を確認）` : '';
+    container.innerHTML = `<div class="empty-state">今後7日間の予定はありません 🎉<br><small style="color:var(--text-sub)">${calInfo}</small></div>`;
     return;
   }
 

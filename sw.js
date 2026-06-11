@@ -1,4 +1,4 @@
-const CACHE = 'cal-alarm-v4';
+const CACHE = 'cal-alarm-v5';
 const ASSETS = ['./', './index.html', './style.css', './app.js', './manifest.json'];
 
 self.addEventListener('install', e => {
