@@ -326,19 +326,36 @@ async function loadEvents() {
 
     renderEvents(allEvents, cals.length, aiResult);
 
-    // AI推奨アラームを自動セット
+    // 自動アラームセット
+    cancelAllAlarms(); // 古いアラームをリセット
+    let autoCount = 0;
+    const now2 = new Date();
+
     if (aiResult?.events) {
+      // AIの判定に従う
       aiResult.events.forEach(ai => {
         if (!ai.needsAlarm) return;
         const event = allEvents.find(e => e.id === ai.id);
         if (!event) return;
         const start = parseEventStart(event);
-        if (!start) return;
-        const minutes = ai.minutes || ALARM_OFFSETS;
+        if (!start || start <= now2) return;
+        const minutes = ai.minutes?.length ? ai.minutes : ALARM_OFFSETS;
         minutes.forEach(m => setAlarm(event.id, m, start, event.summary || ''));
+        autoCount++;
       });
-      renderAlarmBar();
+    } else {
+      // AI無効：全ての時刻付き予定に自動設定
+      allEvents.forEach(event => {
+        if (isAllDayEvent(event)) return;
+        const start = parseEventStart(event);
+        if (!start || start <= now2) return;
+        ALARM_OFFSETS.forEach(m => setAlarm(event.id, m, start, event.summary || ''));
+        autoCount++;
+      });
     }
+
+    renderAlarmBar();
+    if (autoCount > 0) showToast(`⏰ ${autoCount}件の予定にアラームを自動設定しました`);
 
   } catch (err) {
     if (err.status === 401) {
