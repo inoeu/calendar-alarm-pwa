@@ -2,22 +2,30 @@
 
 const SCOPES = 'https://www.googleapis.com/auth/calendar.readonly';
 const STORAGE_KEY_TOKEN = 'gcal_alarm_token';
+const STORAGE_KEY_GEMINI = 'gcal_gemini_key';
+const STORAGE_KEY_AI_AUTO = 'gcal_ai_auto';
 const ALARM_OFFSETS = [15, 5];
 const CAL_COLORS = ['#039BE5','#33B679','#D50000','#F6BF26','#F4511E','#0B8043','#8E24AA','#616161'];
+const GEMINI_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent';
 
 let accessToken = null;
 let activeAlarms = {};
 let eventsCache = [];
 let tickInterval = null;
 
-// ── Bootstrap ────────────────────────────────────────────────────────────────
+// ── Bootstrap ─────────────────────────────────────────────────────────────────
 
 window.addEventListener('DOMContentLoaded', () => {
-  // Inject client_id from config.js into the GIS element
   const onload = document.getElementById('g_id_onload');
   if (onload && typeof GOOGLE_CLIENT_ID !== 'undefined') {
     onload.dataset.client_id = GOOGLE_CLIENT_ID;
   }
+
+  // 設定の復元
+  const geminiKey = localStorage.getItem(STORAGE_KEY_GEMINI);
+  if (geminiKey) document.getElementById('gemini-key-input').value = geminiKey;
+  document.getElementById('ai-auto-analyze').checked =
+    localStorage.getItem(STORAGE_KEY_AI_AUTO) === 'true';
 
   const stored = localStorage.getItem(STORAGE_KEY_TOKEN);
   if (stored) {
@@ -33,35 +41,28 @@ window.addEventListener('DOMContentLoaded', () => {
       }
     } catch (_) {}
   }
-
   showScreen('login');
 });
 
-// ── Google Sign-In callback (GIS One Tap / button) ────────────────────────────
+// ── Google Sign-In ────────────────────────────────────────────────────────────
 
 window.onGoogleSignIn = function(response) {
-  // response.credential is a JWT id_token — decode to get user info
   const payload = parseJwt(response.credential);
   const name = payload.name || '';
   const picture = payload.picture || '';
 
-  // Exchange id_token for an access token via token client
   waitForGSI(() => {
     const tokenClient = google.accounts.oauth2.initTokenClient({
       client_id: GOOGLE_CLIENT_ID,
       scope: SCOPES,
       callback: (tokenResp) => {
-        if (tokenResp.error) {
-          alert('ログインに失敗しました: ' + tokenResp.error);
-          return;
-        }
+        if (tokenResp.error) { alert('ログインに失敗しました: ' + tokenResp.error); return; }
         accessToken = tokenResp.access_token;
         const expiresIn = parseInt(tokenResp.expires_in || 3600, 10);
         localStorage.setItem(STORAGE_KEY_TOKEN, JSON.stringify({
           access_token: accessToken,
           expires_at: Date.now() + expiresIn * 1000,
-          name,
-          picture
+          name, picture
         }));
         setUserInfo(name, picture);
         showScreen('main');
@@ -100,13 +101,10 @@ function setUserInfo(name, picture) {
   const nameEl = document.getElementById('user-name');
   const avatarEl = document.getElementById('user-avatar');
   if (nameEl) nameEl.textContent = name;
-  if (avatarEl && picture) {
-    avatarEl.src = picture;
-    avatarEl.classList.remove('hidden');
-  }
+  if (avatarEl && picture) { avatarEl.src = picture; avatarEl.classList.remove('hidden'); }
 }
 
-// ── Header actions ─────────────────────────────────────────────────────────────
+// ── Header actions ────────────────────────────────────────────────────────────
 
 document.getElementById('refresh-btn').addEventListener('click', loadEvents);
 
@@ -130,6 +128,137 @@ document.getElementById('alarm-bar-cancel').addEventListener('click', () => {
 
 document.getElementById('alarm-dismiss-btn').addEventListener('click', dismissAlarmModal);
 
+// ── Settings ──────────────────────────────────────────────────────────────────
+
+document.getElementById('settings-btn').addEventListener('click', () => {
+  document.getElementById('settings-modal').classList.remove('hidden');
+});
+
+document.getElementById('settings-backdrop').addEventListener('click', closeSettings);
+document.getElementById('settings-cancel-btn').addEventListener('click', closeSettings);
+
+document.getElementById('settings-save-btn').addEventListener('click', () => {
+  const key = document.getElementById('gemini-key-input').value.trim();
+  const autoAnalyze = document.getElementById('ai-auto-analyze').checked;
+  if (key) localStorage.setItem(STORAGE_KEY_GEMINI, key);
+  else localStorage.removeItem(STORAGE_KEY_GEMINI);
+  localStorage.setItem(STORAGE_KEY_AI_AUTO, autoAnalyze);
+  closeSettings();
+  showToast('設定を保存しました');
+});
+
+function closeSettings() {
+  document.getElementById('settings-modal').classList.add('hidden');
+}
+
+// ── Briefing ──────────────────────────────────────────────────────────────────
+
+document.getElementById('briefing-btn').addEventListener('click', async () => {
+  const key = localStorage.getItem(STORAGE_KEY_GEMINI);
+  if (!key) {
+    showToast('設定からGemini APIキーを入力してください');
+    document.getElementById('settings-modal').classList.remove('hidden');
+    return;
+  }
+  const card = document.getElementById('ai-briefing-card');
+  const content = document.getElementById('briefing-content');
+  card.classList.remove('hidden');
+  content.textContent = '✨ AI分析中…';
+
+  const today = eventsCache.filter(e => {
+    const s = parseEventStart(e);
+    if (!s) return false;
+    const now = new Date();
+    return s.toDateString() === now.toDateString();
+  });
+
+  if (!today.length) {
+    content.textContent = '今日の予定はありません。ゆっくり過ごせますね！';
+    return;
+  }
+
+  const eventList = today.map(e => {
+    const s = parseEventStart(e);
+    const time = isAllDayEvent(e) ? '終日' : formatTime(s);
+    return `・${time} ${e.summary || ''}`;
+  }).join('\n');
+
+  try {
+    const result = await callGemini(key, `
+あなたはスケジュール管理AIアシスタントです。
+以下は今日の予定です。日本語で100〜150字程度のブリーフィングを作成してください。
+予定の概要、注意点、移動や準備のアドバイスがあれば含めてください。
+
+今日の予定:
+${eventList}
+
+ブリーフィング（本文のみ、見出しなし）:
+    `.trim());
+    content.textContent = result;
+  } catch (e) {
+    content.textContent = 'エラー: ' + e.message;
+  }
+});
+
+document.getElementById('briefing-close').addEventListener('click', () => {
+  document.getElementById('ai-briefing-card').classList.add('hidden');
+});
+
+// ── AI Analysis ───────────────────────────────────────────────────────────────
+
+async function analyzeEventsWithAI(events) {
+  const key = localStorage.getItem(STORAGE_KEY_GEMINI);
+  if (!key) return null;
+
+  const upcoming = events.filter(e => {
+    const s = parseEventStart(e);
+    return s && !isAllDayEvent(e) && s > new Date();
+  });
+  if (!upcoming.length) return null;
+
+  const eventList = upcoming.map(e => {
+    const s = parseEventStart(e);
+    return `id:${e.id}|${formatTime(s)} ${e.summary || ''}`;
+  }).join('\n');
+
+  const prompt = `
+以下の予定リストを分析してください。各予定について：
+1. アラームが必要かどうか（true/false）
+2. 推奨アラーム時刻（何分前か。例: [30,15,5]）
+3. 移動・準備アドバイス（あれば。なければ空文字）
+
+必ずJSONのみで返答。説明文不要。形式:
+{"events":[{"id":"...","needsAlarm":true,"minutes":[15,5],"advice":""}]}
+
+予定:
+${eventList}
+  `.trim();
+
+  try {
+    const raw = await callGemini(key, prompt);
+    const json = raw.match(/\{[\s\S]*\}/)?.[0];
+    if (!json) return null;
+    return JSON.parse(json);
+  } catch (_) { return null; }
+}
+
+async function callGemini(apiKey, prompt) {
+  const res = await fetch(`${GEMINI_URL}?key=${apiKey}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      contents: [{ parts: [{ text: prompt }] }],
+      generationConfig: { temperature: 0.3, maxOutputTokens: 1024 }
+    })
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err?.error?.message || `API error ${res.status}`);
+  }
+  const data = await res.json();
+  return data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+}
+
 // ── Calendar API ──────────────────────────────────────────────────────────────
 
 async function loadEvents() {
@@ -140,14 +269,12 @@ async function loadEvents() {
   try {
     const now = new Date();
     const end = new Date(now);
-    end.setDate(end.getDate() + 7); // 7日間に拡大
+    end.setDate(end.getDate() + 7);
 
     const calListRes = await gcalFetch(
       'https://www.googleapis.com/calendar/v3/users/me/calendarList?maxResults=50'
     );
     const cals = calListRes.items || [];
-
-    // カレンダーが0件の場合はプライマリだけ試す
     const targets = cals.length > 0 ? cals : [{ id: 'primary', backgroundColor: CAL_COLORS[0] }];
 
     const errors = [];
@@ -178,7 +305,30 @@ async function loadEvents() {
     });
 
     eventsCache = allEvents;
-    renderEvents(allEvents, cals.length);
+
+    // AI自動分析
+    let aiResult = null;
+    if (localStorage.getItem(STORAGE_KEY_AI_AUTO) === 'true' && localStorage.getItem(STORAGE_KEY_GEMINI)) {
+      container.innerHTML = '<div class="loading">✨ AI分析中…</div>';
+      aiResult = await analyzeEventsWithAI(allEvents);
+    }
+
+    renderEvents(allEvents, cals.length, aiResult);
+
+    // AI推奨アラームを自動セット
+    if (aiResult?.events) {
+      aiResult.events.forEach(ai => {
+        if (!ai.needsAlarm) return;
+        const event = allEvents.find(e => e.id === ai.id);
+        if (!event) return;
+        const start = parseEventStart(event);
+        if (!start) return;
+        const minutes = ai.minutes || ALARM_OFFSETS;
+        minutes.forEach(m => setAlarm(event.id, m, start, event.summary || ''));
+      });
+      renderAlarmBar();
+    }
+
   } catch (err) {
     if (err.status === 401) {
       localStorage.removeItem(STORAGE_KEY_TOKEN);
@@ -191,9 +341,7 @@ async function loadEvents() {
 }
 
 async function gcalFetch(url) {
-  const res = await fetch(url, {
-    headers: { Authorization: `Bearer ${accessToken}` }
-  });
+  const res = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
   if (!res.ok) {
     const err = new Error(`API error ${res.status}`);
     err.status = res.status;
@@ -204,7 +352,7 @@ async function gcalFetch(url) {
 
 // ── Render ────────────────────────────────────────────────────────────────────
 
-function renderEvents(events, calCount) {
+function renderEvents(events, calCount, aiResult) {
   const container = document.getElementById('events-container');
   const timeEvents = events.filter(e => parseEventStart(e) !== null);
 
@@ -228,18 +376,20 @@ function renderEvents(events, calCount) {
       lbl.textContent = dateKey;
       fragments.push(lbl);
     }
-    fragments.push(buildEventCard(event, start, now));
+    const aiInfo = aiResult?.events?.find(a => a.id === event.id);
+    fragments.push(buildEventCard(event, start, now, aiInfo));
   });
 
   container.innerHTML = '';
   fragments.forEach(f => container.appendChild(f));
 }
 
-function buildEventCard(event, start, now) {
+function buildEventCard(event, start, now, aiInfo) {
   const id = event.id;
   const title = event.summary || '（タイトルなし）';
   const color = event._calColor || '#007AFF';
   const minutesUntil = (start - now) / 60000;
+  const allDay = isAllDayEvent(event);
 
   const card = document.createElement('div');
   card.className = 'event-card';
@@ -251,21 +401,27 @@ function buildEventCard(event, start, now) {
   dot.className = 'event-color-dot';
   dot.style.background = color;
 
-  const allDay = isAllDayEvent(event);
   const info = document.createElement('div');
   info.className = 'event-info';
   const timeLabel = allDay ? '終日' : formatTime(start);
-  info.innerHTML = `<div class="event-title">${escHtml(title)}</div><div class="event-time">${timeLabel}</div>`;
+  let adviceHtml = '';
+  if (aiInfo?.advice) {
+    adviceHtml = `<div class="ai-advice">✨ ${escHtml(aiInfo.advice)}</div>`;
+  }
+  info.innerHTML = `<div class="event-title">${escHtml(title)}</div><div class="event-time">${timeLabel}</div>${adviceHtml}`;
 
   const alarmArea = document.createElement('div');
   alarmArea.className = 'event-alarm-area';
   alarmArea.dataset.id = id;
   alarmArea.dataset.start = start.getTime();
   alarmArea.dataset.title = title;
+
   if (allDay) {
     alarmArea.innerHTML = '<span class="ended-label">終日</span>';
+  } else if (aiInfo && !aiInfo.needsAlarm) {
+    alarmArea.innerHTML = '<span class="ai-skip-label">AI: 不要</span>';
   } else {
-    refreshAlarmAreaContent(alarmArea, id, start, now);
+    refreshAlarmAreaContent(alarmArea, id, start, now, aiInfo);
   }
 
   card.appendChild(dot);
@@ -274,7 +430,7 @@ function buildEventCard(event, start, now) {
   return card;
 }
 
-function refreshAlarmAreaContent(area, eventId, start, now) {
+function refreshAlarmAreaContent(area, eventId, start, now, aiInfo) {
   const minutesUntil = (start - now) / 60000;
   area.innerHTML = '';
 
@@ -283,7 +439,9 @@ function refreshAlarmAreaContent(area, eventId, start, now) {
     return;
   }
 
-  ALARM_OFFSETS.forEach(offset => {
+  const offsets = aiInfo?.minutes || ALARM_OFFSETS;
+
+  offsets.forEach(offset => {
     const key = `${eventId}_${offset}`;
     const alarmTime = new Date(start.getTime() - offset * 60000);
     const fireMinutes = (alarmTime - now) / 60000;
@@ -301,17 +459,20 @@ function refreshAlarmAreaContent(area, eventId, start, now) {
       btn.textContent = `${offset}分前 ✕`;
       btn.addEventListener('click', () => {
         cancelAlarm(key);
-        refreshAlarmAreaContent(area, eventId, start, new Date());
+        refreshAlarmAreaContent(area, eventId, start, new Date(), aiInfo);
         renderAlarmBar();
       });
       area.appendChild(btn);
     } else {
       const btn = document.createElement('button');
       btn.className = 'alarm-btn alarm-btn-set';
+      if (aiInfo?.needsAlarm && (aiInfo.minutes || []).includes(offset)) {
+        btn.classList.add('ai-recommended');
+      }
       btn.textContent = `${offset}分前`;
       btn.addEventListener('click', () => {
         setAlarm(eventId, offset, start, area.dataset.title);
-        refreshAlarmAreaContent(area, eventId, start, new Date());
+        refreshAlarmAreaContent(area, eventId, start, new Date(), aiInfo);
         renderAlarmBar();
       });
       area.appendChild(btn);
@@ -324,39 +485,26 @@ function refreshAlarmAreaContent(area, eventId, start, now) {
 function setAlarm(eventId, offsetMin, startTime, title) {
   const key = `${eventId}_${offsetMin}`;
   if (activeAlarms[key]) return;
-
   const alarmTime = new Date(startTime.getTime() - offsetMin * 60000);
   const msUntil = alarmTime - Date.now();
   if (msUntil < -60000) return;
-
   requestNotificationPermission();
-
   const timeoutId = setTimeout(() => fireAlarm(title, startTime, key), Math.max(msUntil, 0));
   activeAlarms[key] = { timeoutId, title, startTime, offsetMin };
 }
 
 function cancelAlarm(key) {
-  if (activeAlarms[key]) {
-    clearTimeout(activeAlarms[key].timeoutId);
-    delete activeAlarms[key];
-  }
+  if (activeAlarms[key]) { clearTimeout(activeAlarms[key].timeoutId); delete activeAlarms[key]; }
 }
 
-function cancelAllAlarms() {
-  Object.keys(activeAlarms).forEach(cancelAlarm);
-}
+function cancelAllAlarms() { Object.keys(activeAlarms).forEach(cancelAlarm); }
 
 function fireAlarm(title, startTime, key) {
   delete activeAlarms[key];
   playAlarmSound();
   if (navigator.vibrate) navigator.vibrate([300, 100, 300, 100, 300]);
   if (Notification.permission === 'granted') {
-    new Notification('⏰ ' + title, {
-      body: `${formatTime(startTime)} 開始`,
-      icon: 'icon-192.png',
-      tag: key,
-      renotify: true
-    });
+    new Notification('⏰ ' + title, { body: `${formatTime(startTime)} 開始`, icon: 'icon-192.png', tag: key, renotify: true });
   }
   showAlarmModal(title, startTime);
   renderAlarmBar();
@@ -377,12 +525,9 @@ function dismissAlarmModal() {
 function renderAlarmBar() {
   const count = Object.keys(activeAlarms).length;
   const bar = document.getElementById('alarm-active-bar');
-  if (count === 0) {
-    bar.classList.add('hidden');
-  } else {
-    bar.classList.remove('hidden');
-    document.getElementById('alarm-bar-text').textContent = `⏰ ${count}件のアラームが設定中`;
-  }
+  if (count === 0) { bar.classList.add('hidden'); return; }
+  bar.classList.remove('hidden');
+  document.getElementById('alarm-bar-text').textContent = `⏰ ${count}件のアラームが設定中`;
 }
 
 // ── Tick ──────────────────────────────────────────────────────────────────────
@@ -398,22 +543,17 @@ function startTick() {
   }, 15000);
 }
 
-function stopTick() {
-  if (tickInterval) { clearInterval(tickInterval); tickInterval = null; }
-}
+function stopTick() { if (tickInterval) { clearInterval(tickInterval); tickInterval = null; } }
 
 // ── Notification ──────────────────────────────────────────────────────────────
 
 function requestNotificationPermission() {
-  if ('Notification' in window && Notification.permission === 'default') {
-    Notification.requestPermission();
-  }
+  if ('Notification' in window && Notification.permission === 'default') Notification.requestPermission();
 }
 
 // ── Audio ─────────────────────────────────────────────────────────────────────
 
-let audioCtx = null;
-let alarmNodes = [];
+let audioCtx = null, alarmNodes = [];
 
 function playAlarmSound() {
   stopAlarmSound();
@@ -429,14 +569,12 @@ function playBeepSequence(ctx, repeat = 0) {
   [0, 0.18, 0.36].forEach((offset, i) => {
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();
-    osc.connect(gain);
-    gain.connect(ctx.destination);
+    osc.connect(gain); gain.connect(ctx.destination);
     osc.frequency.value = i === 2 ? 880 : 660;
     osc.type = 'sine';
     gain.gain.setValueAtTime(0.4, now + offset);
     gain.gain.exponentialRampToValueAtTime(0.001, now + offset + 0.15);
-    osc.start(now + offset);
-    osc.stop(now + offset + 0.15);
+    osc.start(now + offset); osc.stop(now + offset + 0.15);
     alarmNodes.push(osc);
   });
   setTimeout(() => playBeepSequence(ctx, repeat + 1), 800);
@@ -451,36 +589,42 @@ function stopAlarmSound() {
   }
 }
 
+// ── Toast ─────────────────────────────────────────────────────────────────────
+
+function showToast(msg) {
+  let toast = document.getElementById('toast');
+  if (!toast) {
+    toast = document.createElement('div');
+    toast.id = 'toast';
+    toast.className = 'toast';
+    document.body.appendChild(toast);
+  }
+  toast.textContent = msg;
+  toast.classList.add('show');
+  setTimeout(() => toast.classList.remove('show'), 2500);
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function parseEventStart(event) {
   const s = event?.start;
   if (!s) return null;
-  if (s.dateTime) {
-    try { return new Date(s.dateTime); } catch (_) { return null; }
-  }
-  if (s.date) {
-    // 終日イベント: 日付の開始時刻（00:00 JST）として扱う
-    try { return new Date(s.date + 'T00:00:00+09:00'); } catch (_) { return null; }
-  }
+  if (s.dateTime) { try { return new Date(s.dateTime); } catch (_) { return null; } }
+  if (s.date) { try { return new Date(s.date + 'T00:00:00+09:00'); } catch (_) { return null; } }
   return null;
 }
 
-function isAllDayEvent(event) {
-  return !!event?.start?.date && !event?.start?.dateTime;
-}
+function isAllDayEvent(event) { return !!event?.start?.date && !event?.start?.dateTime; }
 
-function formatTime(dt) {
-  return dt.toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' });
-}
+function formatTime(dt) { return dt.toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' }); }
 
 function formatDateLabel(dt) {
   const now = new Date();
   const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const d = new Date(dt.getFullYear(), dt.getMonth(), dt.getDate());
   const diff = Math.round((d - today) / 86400000);
-  const weekdays = ['日', '月', '火', '水', '木', '金', '土'];
-  const base = `${dt.getMonth() + 1}月${dt.getDate()}日（${weekdays[dt.getDay()]}）`;
+  const weekdays = ['日','月','火','水','木','金','土'];
+  const base = `${dt.getMonth()+1}月${dt.getDate()}日（${weekdays[dt.getDay()]}）`;
   if (diff === 0) return `今日 · ${base}`;
   if (diff === 1) return `明日 · ${base}`;
   if (diff === 2) return `明後日 · ${base}`;
@@ -488,7 +632,7 @@ function formatDateLabel(dt) {
 }
 
 function escHtml(s) {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
 
 if ('serviceWorker' in navigator) {

@@ -333,3 +333,103 @@ h1 { font-size: 28px; font-weight: 700; text-align: center; }
   50% { opacity: 0.5; }
 }
 .pulsing { animation: pulse 1.5s ease infinite; }
+
+/* ── AI styles ── */
+.ai-btn { color: #F59E0B; }
+
+.ai-advice {
+  font-size: 12px;
+  color: #F59E0B;
+  margin-top: 4px;
+  line-height: 1.4;
+  white-space: normal;
+}
+
+.ai-recommended {
+  background: rgba(245,158,11,0.15) !important;
+  color: #F59E0B !important;
+  position: relative;
+}
+.ai-recommended::before { content: '✨ '; }
+
+.ai-skip-label {
+  font-size: 11px;
+  color: var(--text-sub);
+  background: var(--bg);
+  padding: 4px 8px;
+  border-radius: 10px;
+}
+
+/* ── Briefing card ── */
+.briefing-card {
+  margin: 12px 16px 0;
+  background: linear-gradient(135deg, rgba(245,158,11,0.12), rgba(245,158,11,0.05));
+  border: 1px solid rgba(245,158,11,0.3);
+  border-radius: 14px;
+  padding: 14px 16px;
+}
+.briefing-card.hidden { display: none; }
+
+.briefing-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+.briefing-title { font-size: 13px; font-weight: 700; color: #F59E0B; }
+.briefing-close {
+  background: none; border: none; color: var(--text-sub);
+  font-size: 14px; cursor: pointer; padding: 0 4px;
+}
+.briefing-content {
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--text);
+  white-space: pre-wrap;
+}
+
+/* ── Settings modal ── */
+.settings-content {
+  text-align: left;
+  gap: 16px;
+  max-width: 360px;
+}
+.settings-title { font-size: 18px; font-weight: 700; text-align: center; width: 100%; }
+.settings-section { width: 100%; display: flex; flex-direction: column; gap: 8px; }
+.settings-label { font-size: 13px; font-weight: 600; color: var(--text-sub); text-transform: uppercase; letter-spacing: 0.5px; }
+.settings-hint { font-size: 12px; color: var(--text-sub); }
+.settings-hint a { color: var(--blue); text-decoration: none; }
+.settings-input {
+  width: 100%;
+  padding: 12px;
+  border: 1.5px solid var(--border);
+  border-radius: 10px;
+  font-size: 14px;
+  background: var(--bg);
+  color: var(--text);
+  outline: none;
+  -webkit-appearance: none;
+}
+.settings-input:focus { border-color: var(--blue); }
+.settings-row { display: flex; align-items: center; gap: 8px; }
+.toggle-label { display: flex; align-items: center; gap: 8px; font-size: 14px; cursor: pointer; }
+.toggle-label input[type="checkbox"] { width: 18px; height: 18px; accent-color: var(--blue); }
+
+/* ── Toast ── */
+.toast {
+  position: fixed;
+  bottom: calc(var(--safe-bottom) + 24px);
+  left: 50%;
+  transform: translateX(-50%) translateY(20px);
+  background: rgba(0,0,0,0.75);
+  color: #fff;
+  padding: 10px 20px;
+  border-radius: 20px;
+  font-size: 14px;
+  opacity: 0;
+  transition: opacity 0.2s, transform 0.2s;
+  pointer-events: none;
+  white-space: nowrap;
+  z-index: 200;
+}
+.toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }

@@ -20,23 +20,11 @@
       <div class="app-icon">📅</div>
       <h1>カレンダーアラーム</h1>
       <p class="subtitle">Googleカレンダーの予定を<br>自動でアラーム設定</p>
-
-      <!-- Google Sign-In ボタン（GISライブラリが描画） -->
-      <div id="g_id_onload"
-        data-client_id=""
-        data-callback="onGoogleSignIn"
-        data-auto_prompt="false">
-      </div>
+      <div id="g_id_onload" data-client_id="" data-callback="onGoogleSignIn" data-auto_prompt="false"></div>
       <div id="google-signin-btn" class="g_id_signin"
-        data-type="standard"
-        data-size="large"
-        data-theme="outline"
-        data-text="signin_with"
-        data-shape="pill"
-        data-locale="ja"
-        data-width="280">
+        data-type="standard" data-size="large" data-theme="outline"
+        data-text="signin_with" data-shape="pill" data-locale="ja" data-width="280">
       </div>
-
       <p class="login-note">Googleカレンダーの閲覧権限のみ使用します</p>
     </div>
   </div>
@@ -49,6 +37,8 @@
         <span id="user-name" class="user-name"></span>
       </div>
       <div class="header-actions">
+        <button id="briefing-btn" class="icon-btn ai-btn" title="今日のブリーフィング">✨</button>
+        <button id="settings-btn" class="icon-btn" title="設定">⚙︎</button>
         <button id="refresh-btn" class="icon-btn" title="更新">↻</button>
         <button id="logout-btn" class="icon-btn" title="ログアウト">⏏</button>
       </div>
@@ -59,10 +49,19 @@
       <button id="alarm-bar-cancel" class="bar-cancel-btn">すべてキャンセル</button>
     </div>
 
+    <div id="ai-briefing-card" class="briefing-card hidden">
+      <div class="briefing-header">
+        <span class="briefing-title">✨ 今日のAIブリーフィング</span>
+        <button id="briefing-close" class="briefing-close">✕</button>
+      </div>
+      <div id="briefing-content" class="briefing-content">読み込み中…</div>
+    </div>
+
     <div id="events-container">
       <div class="loading">読み込み中…</div>
     </div>
 
+    <!-- アラーム発火モーダル -->
     <div id="alarm-modal" class="modal hidden">
       <div class="modal-backdrop"></div>
       <div class="modal-content alarm-fire">
@@ -70,6 +69,31 @@
         <div id="alarm-modal-title" class="alarm-title"></div>
         <div id="alarm-modal-time" class="alarm-time"></div>
         <button id="alarm-dismiss-btn" class="btn-primary">止める</button>
+      </div>
+    </div>
+
+    <!-- 設定モーダル -->
+    <div id="settings-modal" class="modal hidden">
+      <div class="modal-backdrop" id="settings-backdrop"></div>
+      <div class="modal-content settings-content">
+        <h3 class="settings-title">⚙︎ 設定</h3>
+        <div class="settings-section">
+          <label class="settings-label">Gemini API キー</label>
+          <p class="settings-hint">
+            <a href="https://aistudio.google.com/app/apikey" target="_blank">Google AI Studio</a>
+            で無料取得できます
+          </p>
+          <input id="gemini-key-input" type="password" class="settings-input"
+            placeholder="AIza..." autocomplete="off" />
+          <div class="settings-row">
+            <label class="toggle-label">
+              <input type="checkbox" id="ai-auto-analyze" />
+              <span>読み込み時にAI自動分析</span>
+            </label>
+          </div>
+        </div>
+        <button id="settings-save-btn" class="btn-primary">保存</button>
+        <button id="settings-cancel-btn" class="btn-text">キャンセル</button>
       </div>
     </div>
   </div>
