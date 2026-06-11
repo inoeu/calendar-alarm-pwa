@@ -16,11 +16,6 @@ let tickInterval = null;
 // ── Bootstrap ─────────────────────────────────────────────────────────────────
 
 window.addEventListener('DOMContentLoaded', () => {
-  const onload = document.getElementById('g_id_onload');
-  if (onload && typeof GOOGLE_CLIENT_ID !== 'undefined') {
-    onload.dataset.client_id = GOOGLE_CLIENT_ID;
-  }
-
   // 設定の復元
   const geminiKey = localStorage.getItem(STORAGE_KEY_GEMINI);
   if (geminiKey) document.getElementById('gemini-key-input').value = geminiKey;
@@ -41,8 +36,24 @@ window.addEventListener('DOMContentLoaded', () => {
       }
     } catch (_) {}
   }
+
   showScreen('login');
+  // GISライブラリが読み込まれたらSignInボタンを描画
+  waitForGSI(initGoogleSignInButton);
 });
+
+function initGoogleSignInButton() {
+  google.accounts.id.initialize({
+    client_id: GOOGLE_CLIENT_ID,
+    callback: onGoogleSignIn,
+    auto_select: false
+  });
+  google.accounts.id.renderButton(
+    document.getElementById('google-signin-btn'),
+    { type: 'standard', size: 'large', theme: 'outline',
+      text: 'signin_with', shape: 'pill', locale: 'ja', width: 280 }
+  );
+}
 
 // ── Google Sign-In ────────────────────────────────────────────────────────────
 
