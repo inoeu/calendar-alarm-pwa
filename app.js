@@ -81,7 +81,11 @@ function waitForGSI(cb, attempts = 0) {
 
 function parseJwt(token) {
   try {
-    return JSON.parse(atob(token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));
+    const base64 = token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
+    const json = decodeURIComponent(
+      atob(base64).split('').map(c => '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2)).join('')
+    );
+    return JSON.parse(json);
   } catch (_) { return {}; }
 }
 
@@ -193,7 +197,7 @@ async function gcalFetch(url) {
 
 function renderEvents(events) {
   const container = document.getElementById('events-container');
-  const timeEvents = events.filter(e => parseEventStart(e));
+  const timeEvents = events.filter(e => parseEventStart(e) !== null);
 
   if (!timeEvents.length) {
     container.innerHTML = '<div class="empty-state">今後3日間の予定はありません 🎉</div>';
@@ -237,16 +241,22 @@ function buildEventCard(event, start, now) {
   dot.className = 'event-color-dot';
   dot.style.background = color;
 
+  const allDay = isAllDayEvent(event);
   const info = document.createElement('div');
   info.className = 'event-info';
-  info.innerHTML = `<div class="event-title">${escHtml(title)}</div><div class="event-time">${formatTime(start)}</div>`;
+  const timeLabel = allDay ? '終日' : formatTime(start);
+  info.innerHTML = `<div class="event-title">${escHtml(title)}</div><div class="event-time">${timeLabel}</div>`;
 
   const alarmArea = document.createElement('div');
   alarmArea.className = 'event-alarm-area';
   alarmArea.dataset.id = id;
   alarmArea.dataset.start = start.getTime();
   alarmArea.dataset.title = title;
-  refreshAlarmAreaContent(alarmArea, id, start, now);
+  if (allDay) {
+    alarmArea.innerHTML = '<span class="ended-label">終日</span>';
+  } else {
+    refreshAlarmAreaContent(alarmArea, id, start, now);
+  }
 
   card.appendChild(dot);
   card.appendChild(info);
@@ -435,8 +445,19 @@ function stopAlarmSound() {
 
 function parseEventStart(event) {
   const s = event?.start;
-  if (!s || !s.dateTime) return null;
-  try { return new Date(s.dateTime); } catch (_) { return null; }
+  if (!s) return null;
+  if (s.dateTime) {
+    try { return new Date(s.dateTime); } catch (_) { return null; }
+  }
+  if (s.date) {
+    // 終日イベント: 日付の開始時刻（00:00 JST）として扱う
+    try { return new Date(s.date + 'T00:00:00+09:00'); } catch (_) { return null; }
+  }
+  return null;
+}
+
+function isAllDayEvent(event) {
+  return !!event?.start?.date && !event?.start?.dateTime;
 }
 
 function formatTime(dt) {
